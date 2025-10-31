@@ -18,7 +18,7 @@ MeUltrasonicSensor ultraSensor(PORT_8);
 #define LEDPIN  44
 #define RINGALLLEDS 0
 
-MeRGBLed led( PORT0, LEDNUM );
+MeRGBLed led( PORT0, LEDNUM );  
 
 MeEncoderOnBoard encoderRight(SLOT1);
 MeEncoderOnBoard encoderLeft(SLOT2);
@@ -46,7 +46,7 @@ unsigned long serialPrintPrevious = 0;
 int serialPrintInterval = 500;
 String msg = "";
 
-int distSeg1 = 210;
+int distSeg1 = 100;
 int distSeg2;
 int distWall = 50;
 
@@ -193,8 +193,8 @@ void ledTask() {
       led.setColor(0, 0, 0);
       break;
 
-    case SUCCESS:
-    case DONE:
+    case SUCCESS: {
+      case DONE:
       static unsigned long lastBlink = 0;
       static bool blinkState = false;
       const int blinkSpeed = 125;
@@ -207,7 +207,9 @@ void ledTask() {
 
       blinkState ? led.setColor(0, ledInt, 0) : led.setColor(0, 0, 0);
 
-    break;
+      break;
+    }
+    
 
     case RETURN: {
       int rate = 100;
@@ -339,7 +341,7 @@ void returnState() {
         phase = SEGMENT1;
         firstTime = true;
         resetControllers();
-        //delay(100);  // Sinon crash
+        delay(100);  // Sinon crash
       }
     break;
     case SEGMENT1:
@@ -442,9 +444,9 @@ void goStraight(short speed) {
     // higher kp = plus réactive, peu osciller
     // lowewr kp = sluggish, moins d'oscillation
     // higher kd = limite l'oscillation, la bonne valeur arrête l'oscillation
-    const double kp = 30;
+    const double kp = 10;
     //const double ki = 1.0;
-    const double kd = 30;
+    const double kd = 10;
     
     if (straightFirstRun) {
       straightFirstRun = false;

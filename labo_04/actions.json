@@ -1,0 +1,29 @@
+{
+  "header": [
+    255,
+    85
+  ],
+  "directions": {
+    "w": "F",
+    "a": "L",
+    "s": "B",
+    "d": "R",
+    "e": "K",
+    "stop": "S"
+  },
+  "actions": [
+    {
+      "key": "l",
+      "data": "LIGHT_TOGGLE",
+      "label": "Toggle Light"
+    },
+    {
+      "key": "z",
+      "data": [
+        255,
+        85
+      ],
+      "label": "Special Command"
+    }
+  ]
+}

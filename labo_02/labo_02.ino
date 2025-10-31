@@ -124,7 +124,7 @@ void dangerTask() {
   static unsigned long lastTime = 0;
   static int stopDelay = 500;
   static int reverseDelay = 1000;
-  static int pivotDelay = 600;
+  static int pivotDelay = 350;
 
   if (firstTime) {
     firstTime = false;
