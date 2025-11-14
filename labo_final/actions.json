@@ -1,0 +1,33 @@
+{
+  "header": [255, 85],
+  "directions": {
+    "w": "F",
+    "a": "L",
+    "s": "B",
+    "d": "R",
+    "e": "\tK",
+    "stop": "S"
+  },
+  "actions": [
+    {
+      "key": "l",
+      "data": "i",
+      "label": "Follow Line"
+    },
+    {
+      "key": "m",
+      "data": "M",
+      "label": "Manual"
+    },
+    {
+      "key": "z",
+      "data": [255, 85],
+      "label": "Special Command"
+    },
+    {
+      "key": "k",
+      "data": "k",
+      "label": "Calibration"
+    }
+  ]
+}
