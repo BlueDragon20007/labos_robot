@@ -28,6 +28,11 @@
       "key": "k",
       "data": "k",
       "label": "Calibration"
+    },
+    {
+      "key": "g",
+      "data": "GO",
+      "label": "GO"
     }
   ]
 }

@@ -1,5 +1,6 @@
 #include <Adafruit_seesaw.h>
 #include <MeAuriga.h>
+#include <ArduinoJson.h>
 
 //École: {"device_name": "Makeblock_LE001b10672e24"}
 //Maison: {"device_name": "Makeblock_LE001b1063e3be"}
@@ -11,9 +12,13 @@ struct Capteur {
   int valMax = 0;
   int val;
   int normal;
+  float seuil;
+  bool onLine;
 };
 
 Capteur capteurs[5];
+
+// bool onLine[NB_IR] = {false, false, false, false, false};
 
 Adafruit_seesaw ss;
 
@@ -50,9 +55,10 @@ MeEncoderOnBoard encoderRight(SLOT1);
 MeEncoderOnBoard encoderLeft(SLOT2);
 
 unsigned long currentTime = 0;
+unsigned long chronoStart = 0;
 bool debugMode = false;
 
-short speed = 150;
+short speed = 100;
 short lineSpeed = 100;
 
 bool straightFirstRun = true;
@@ -66,22 +72,53 @@ String currentCommand;
 bool isCalibrating = false;
 bool firstTurn = true;
 bool firstLine;
+bool firstSpin = true;
+
+short checkPoint = 0;
 
 enum State {
   AUTO,
   MANUAL,
   LINE,
-  CALIBRATION
+  CALIBRATION,
+  MISSION
 };
 
 State state = MANUAL;
 
 enum LineState {
   FOLLOW,
-  CAREFUL
+  CAREFUL,
+  INTERSECTION
 };
 
 LineState lineState = FOLLOW;
+
+enum IntState {
+  ADVANCE,
+  SPIN,
+  FINAL
+};
+
+IntState intState = ADVANCE;
+
+enum MissionState {
+  START,
+  PACKAGE
+};
+
+MissionState missionState = START;
+
+enum LedState {
+  OFF,
+  THREE,
+  TWO,
+  ONE,
+  GO
+};
+
+LedState ledState = THREE;
+
 
 void rightEncoderInterrupt(void)
 {
@@ -144,12 +181,12 @@ void setup() {
   encoderConfig();
   gyro.begin();
   commandStop();
-  
+  jsonTask();
 }
 
 bool turn(int angle) {
   static double zAngleGoal = 0.0;
-  static float speed = 80;
+  static float speed = 50;
     
   static double error = 0.0;
   static double previousError = 0.0;
@@ -169,7 +206,7 @@ bool turn(int angle) {
   float angleNormal = gyro.getAngleZ() - zAngleGoal;
 
   if (angleNormal > 180) angleNormal -= 360;
-  if (angleNormal < 180) angleNormal += 360;
+  if (angleNormal < -180) angleNormal += 360;
     
   // error = gyro.getAngleZ() - zAngleGoal;
 
@@ -206,11 +243,16 @@ void calibration() {
     encoderRight.setMotorPwm(0);
 
     for (int i = 0; i < NB_IR; i++) {
+      capteurs[i].seuil = (capteurs[i].valMin + capteurs[i].valMax) / 2.0;
+    }
+
+    for (int i = 0; i < NB_IR; i++) {
       Serial.print(i);
       Serial.print(F(" - "));
-      Serial.print(capteurs[i].valMin);
-      Serial.print(F(" - "));
-      Serial.println(capteurs[i].valMax);
+      Serial.println(capteurs[i].seuil);
+      // Serial.print(capteurs[i].valMin);
+      // Serial.print(F(" - "));
+      // Serial.println(capteurs[i].valMax);
     }
   } 
 }
@@ -220,6 +262,8 @@ void loop() {
   //stateManager(currentTime);
   //communicationTask();
 
+  jsonTask();
+
   switch(state) {
     case LINE:
       lineTask();
@@ -227,6 +271,8 @@ void loop() {
     case CALIBRATION:
       calibration();
     break;
+    case MISSION:
+      missionTask();
   }
   
   debugTask();
@@ -354,6 +400,12 @@ void handleCommand(String command) {
       state = CALIBRATION;
       break;
 
+    case 'G':
+      state = MISSION;
+      encoderLeft.setMotorPwm(0);
+      encoderRight.setMotorPwm(0);
+      break;
+
     case 'S':
       commandStop();
       // encoderLeft.setMotorPwm(0);
@@ -449,9 +501,9 @@ void goStraight(short speed) {
     // higher kp = plus réactive, peu osciller
     // lowewr kp = sluggish, moins d'oscillation
     // higher kd = limite l'oscillation, la bonne valeur arrête l'oscillation
-    const double kp = 8;
+    const double kp = 3;
     //const double ki = 1.0;
-    const double kd = 8;
+    const double kd = 3;
     
     if (straightFirstRun) {
       straightFirstRun = false;
@@ -618,7 +670,7 @@ int countCharOccurrences(const String &str, char ch) {
 
 float computePID(float position, float consigne = 0.0f) {
     // Ajuster les coefficients selon vos besoins
-    static float kp = 0.7; // Coefficient proportionnel
+    static float kp = 0.4; // Coefficient proportionnel
     static float ki = 0.01; // Coefficient intégral
     static float kd = 0.01; // Coefficient dérivé
 
@@ -713,6 +765,9 @@ float getLinePosition() {
 void normaliserValeurs() {
   for (int i = 0; i < NB_IR; i++) {
     capteurs[i].val = ss.analogRead(i);
+    for (int i = 0; i < NB_IR; i++) {
+      capteurs[i].onLine = (capteurs[i].val < capteurs[i].seuil);
+    }
     // if (capteurs[i].val < capteurs[i].valMin) capteurs[i].valMin = capteurs[i].val;
     // if (capteurs[i].val > capteurs[i].valMax) capteurs[i].valMax = capteurs[i].val;
     // Serial.println(ss.analogRead(i));
@@ -724,37 +779,62 @@ void normaliserValeurs() {
 
 float getDistance() {
   static unsigned long lastTime = 0;
-  static int delay = 100;
+  static int delay = 250;
   float distance;
+  float newDistance;
 
   if (currentTime - lastTime < delay) return distance; 
 
   lastTime = currentTime;
 
-  distance = ultraSensor.distanceCm();
+  newDistance = ultraSensor.distanceCm();
+
+  if (newDistance > 0 && newDistance < 250) {
+    distance = newDistance;
+    delay = 100;
+  } else {
+    delay = 250;
+  }
 
   return distance;
 }
 
+bool allSensorsOnLine() {
+  for (int i = 0; i < NB_IR; i++) {
+    if (!capteurs[i].onLine) return false;
+  }
+  return true;
+}
+
+bool noSensorsOnLine() {
+  for (int i = 0; i < NB_IR; i++) {
+    if (capteurs[i].onLine) return false;
+  }
+  return true;
+}
+
 void updateLineState(float distance) {
-  static int seuilDist = 50;
+  static int seuilDist = 40;
   static bool isCareful = false;
+  static short fastSpeed = lineSpeed;
   static short slowSpeed = 40;
 
   switch(lineState) {
     case FOLLOW:
+      lineSpeed = fastSpeed;
       if (distance <= seuilDist && !isCareful) {
         lineState = CAREFUL;
         isCareful = true;
-        lineSpeed = slowSpeed;
+
         Serial.println(F("CAREFUL"));
       }
       break;
     case CAREFUL:
+      lineSpeed = slowSpeed;
       if (distance > seuilDist && isCareful) {
         lineState = FOLLOW;
         isCareful = false;
-        lineSpeed = speed; // speed est la variable globale de vitesse en manuelle
+         // speed est la variable globale de vitesse en manuelle
         Serial.println(F("FOLLOW"));
       }
       break;
@@ -762,18 +842,152 @@ void updateLineState(float distance) {
 }
 
 void handleLinePresence(bool isOnLine, float adjustment) {
-  static short speed = 60;
-  static int fullLine = 2000;
-  if (isOnLine && getTotalSignal() > fullLine) {
-    if (firstLine) firstLine = false;
-    suivreLigne(adjustment);
-  } else {
-    if (firstLine) {
-      goStraight(speed);
-    } else {
-      encoderLeft.setMotorPwm(speed);
-      encoderRight.setMotorPwm(speed);
-    }
+  static short speed = lineSpeed;
+
+  if (firstLine && !noSensorsOnLine()) {
+    firstLine = false;
+  }
+
+  // static int fullLine = 2000;
+  // if (isOnLine && getTotalSignal() > fullLine) {
+  //   if (firstLine) firstLine = false;
+  //   suivreLigne(adjustment);
+  // } else {
+  //   if (firstLine) {
+  //     goStraight(speed);
+  //   } else {
+  //     encoderLeft.setMotorPwm(speed);
+  //     encoderRight.setMotorPwm(speed);
+  //   }
+  // }
+
+  if (allSensorsOnLine() && !firstLine) { // intersections
+    lineState = INTERSECTION;
+    return;
+  }
+
+  if (allSensorsOnLine() && firstLine) { // entrer en ligne
+    encoderLeft.setMotorPwm(speed);
+    encoderRight.setMotorPwm(speed);
+    return;
+  }
+
+  if (capteurs[0].onLine && capteurs[1].onLine && capteurs[2].onLine) { // angle droit vers la gauche
+    encoderLeft.setMotorPwm(-speed);
+    encoderRight.setMotorPwm(-speed);
+    return;
+  }
+
+  if (capteurs[2].onLine && capteurs[3].onLine && capteurs[4].onLine) { // angle droit vers la droite
+    encoderLeft.setMotorPwm(speed);
+    encoderRight.setMotorPwm(speed);
+    return;
+  }
+
+  if (noSensorsOnLine() && !firstLine) { // tourne pour revenir sur ligne
+    //Serial.println(firstLine);
+    encoderLeft.setMotorPwm(speed);
+    encoderRight.setMotorPwm(speed);
+    return;
+  }
+
+  if (noSensorsOnLine() && firstLine) { // aucune ligne rencontrer
+    //Serial.println(firstLine);
+    goStraight(speed);
+    return;
+  }
+
+  suivreLigne(adjustment);
+}
+
+bool spin90(short direction = 1) {
+  static double zAngleGoal = 0.0;
+  static float speed = 33;
+    
+  static double error = 0.0;
+  static double previousError = 0.0;
+  static double output = 0;
+  
+  // PD Controller
+  // Change les valeurs selon tes besoins
+  // higher kp = plus réactive, peu osciller
+  // lowewr kp = sluggish, moins d'oscillation
+  // higher kd = limite l'oscillation, la bonne valeur arrête l'oscillation
+  const double kp = 1.1;
+  //const double ki = 1.0;
+  const double kd = 1.1;
+  
+  if (firstSpin) {
+    firstSpin = false;
+
+    zAngleGoal = gyro.getAngleZ() + 90 * direction;
+    Serial.println ("Setting speed");
+      
+    encoderLeft.setMotorPwm(speed * direction);
+    encoderRight.setMotorPwm(speed * direction);
+      
+    return false;
+    
+  }
+    
+  error = gyro.getAngleZ() - zAngleGoal;
+  if (error > 180) error -= 360;
+  if (error < -180) error += 360;
+    
+  // Google : ELI5 PID
+  // Astuce web : ELI5 = Explain Like I'm 5
+  // output = kp * error + kd * (error - previousError);
+    
+  // previousError = error;        
+    
+  encoderLeft.setMotorPwm(speed * direction);
+  encoderRight.setMotorPwm(speed * direction);
+
+  if (abs(error) < 2.0) {
+    encoderLeft.setMotorPwm(0);
+    encoderRight.setMotorPwm(0);
+    firstSpin = true;
+    return true;
+  }
+
+  return false;
+}
+
+void handleIntersections(float distance) {
+  static unsigned long startTime;
+  static bool direction;
+  static short advanceDelay = 500;
+  static short slow = 50;
+
+  switch (intState) {
+    case ADVANCE:
+      checkPoint++;
+      startTime = currentTime;
+      firstSpin = true;
+      firstTurn = true;
+      straightFirstRun = true;  
+      goStraight(slow);
+      intState = SPIN;
+      break;
+
+    case SPIN:
+      if (currentTime - startTime < advanceDelay) return;
+      if (!spin90(-1)) return;
+      direction = (distance < 50);  // TRUE = mur
+      intState = FINAL;
+      break;
+
+    case FINAL:
+      if (direction) {
+        if (!turn(175)) return; // tourner à droite si mur à gauche
+      }
+      // Sortie : remise à zéro des phases et retour au FOLLOW
+      Serial.println(F("gauche"));
+      lineState = FOLLOW;
+      intState = ADVANCE;
+      encoderLeft.setMotorPwm(0);
+      encoderRight.setMotorPwm(0);
+      break;
   }
 }
 
@@ -801,7 +1015,93 @@ void lineTask() { /////////////////// LOOP FOR LINE ////////////////////
   bool isOnLine = detectLine(totalSignal);
   //Serial.println(isOnLine);
 
-  handleLinePresence(isOnLine, adjustment);
+  switch(lineState) {
+    case FOLLOW:
+    case CAREFUL:
+      handleLinePresence(isOnLine, adjustment);
+      break;
+
+    case INTERSECTION:
+      handleIntersections(distance);
+      break;
+  }
 }
 
+#pragma endregion
+
+#pragma region OTHERS
+void jsonTask() {
+  static char output[128];
+  static unsigned long lastTime = 0;
+  static short delay = 1000;
+
+  if (currentTime - lastTime >= delay) {
+    static StaticJsonDocument<128> doc;
+    lastTime = currentTime;
+    doc["ts"] = currentTime;
+    doc["chrono"] = currentTime - chronoStart;
+    doc["etat"] = state;
+    doc["gz"] = gyro.getAngleZ();
+
+    static JsonObject pwm = doc.createNestedObject("pwm");
+    pwm["l"] = encoderLeft.getCurPwm();
+    pwm["r"] = encoderRight.getCurPwm();
+
+    //JsonArray capt = doc.to<JsonArray>();
+    static JsonArray capt = doc.createNestedArray("capt");
+    for (int i = 0; i < NB_IR; i++) {
+      capt[i] = capteurs[i].val;
+    }
+    serializeJson(doc, output); 
+    Serial.println(output); 
+  } 
+}
+#pragma endregion
+#pragma region MISSON
+void missionTask() {
+  static bool firstMission = true;
+  if (firstMisson) {
+    firstMisson = false;
+  }
+  ledTask();
+  switch(missionState) {
+    case START:
+      break;
+  }
+  
+}
+
+void ledTask() {
+  static unsigned long lastTime = 0;
+  static short ledInt = 25;
+  switch(ledState) {
+    case THREE:
+        led_ring.setColor(ledInt, 0, 0);
+        ledState = TWO;
+        lastTime = currentTime;
+        Serial.println(3);
+      break;
+    case TWO:
+      static int delay = 2000;
+      if (currentTime - lastTime < delay) return;
+      led_ring.setColor(ledInt, ledInt, 0);
+      ledState = ONE;
+      lastTime = currentTime;
+      Serial.println(1);
+      break;
+    case ONE:
+      static int delay = 1000;
+      if (currentTime - lastTime < delay) return;
+      led_ring.setColor(0, ledInt, 0);
+      ledState = GO;
+      lastTime = currentTime;
+      Serial.println(F("GO!"));
+      break;
+    case GO:
+        ledState = OFF;
+      break;
+    case OFF:
+      break;
+  }
+}
 #pragma endregion
