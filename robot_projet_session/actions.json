@@ -5,8 +5,13 @@
     "a": "L",
     "s": "B",
     "d": "R",
-    "e": "\tK",
-    "stop": "S"
+    "e": "K",
+    "stop": "S",
+    "x": "X",
+    "c": "C",
+    "v": "V",
+    "b": "H",
+    "n": "N"
   },
   "actions": [
     {
@@ -26,13 +31,43 @@
     },
     {
       "key": "k",
-      "data": "k",
+      "data": "o",
       "label": "Calibration"
     },
     {
       "key": "g",
       "data": "GO",
       "label": "GO"
+    },
+    {
+      "key": "f",
+      "data": "W",
+      "label": "STOP"
+    },
+    {
+      "key": "x",
+      "data": "X",
+      "label": ""
+    },
+    {
+      "key": "c",
+      "data": "C",
+      "label": ""
+    },
+    {
+      "key": "v",
+      "data": "V",
+      "label": ""
+    },
+    {
+      "key": "b",
+      "data": "H",
+      "label": ""
+    },
+    {
+      "key": "n",
+      "data": "N",
+      "label": ""
     }
   ]
 }

@@ -56,10 +56,13 @@ MeEncoderOnBoard encoderLeft(SLOT2);
 
 unsigned long currentTime = 0;
 unsigned long chronoStart = 0;
+unsigned long chronoEnd = 0;
+unsigned long missionBeginning = 0;
 bool debugMode = false;
 
-short speed = 100;
-short lineSpeed = 100;
+short speed = 200;
+short lineSpeed = 110; // 115 - 125
+float distance;
 
 bool straightFirstRun = true;
 
@@ -73,15 +76,21 @@ bool isCalibrating = false;
 bool firstTurn = true;
 bool firstLine;
 bool firstSpin = true;
+bool raceEnded = false;
+bool beep = false;
 
 short checkPoint = 0;
+
+bool possessPackage = false;
+bool arrived = false;
 
 enum State {
   AUTO,
   MANUAL,
   LINE,
   CALIBRATION,
-  MISSION
+  MISSION,
+  END
 };
 
 State state = MANUAL;
@@ -97,14 +106,17 @@ LineState lineState = FOLLOW;
 enum IntState {
   ADVANCE,
   SPIN,
-  FINAL
+  FINAL,
+  PARKING
 };
 
 IntState intState = ADVANCE;
 
 enum MissionState {
   START,
-  PACKAGE
+  PACKAGE,
+  DELIVER,
+  RACE
 };
 
 MissionState missionState = START;
@@ -119,6 +131,13 @@ enum LedState {
 
 LedState ledState = THREE;
 
+enum FindLineState {
+  FIND,
+  CENTER,
+  DONE
+};
+
+FindLineState findLineState = FIND;
 
 void rightEncoderInterrupt(void)
 {
@@ -186,7 +205,7 @@ void setup() {
 
 bool turn(int angle) {
   static double zAngleGoal = 0.0;
-  static float speed = 50;
+  static float speed = 60;
     
   static double error = 0.0;
   static double previousError = 0.0;
@@ -264,6 +283,12 @@ void loop() {
 
   jsonTask();
 
+  ledCheckpoint();
+
+  if (!raceEnded) {
+    chronoEnd = currentTime;
+  }
+
   switch(state) {
     case LINE:
       lineTask();
@@ -273,6 +298,10 @@ void loop() {
     break;
     case MISSION:
       missionTask();
+      break;
+    case END:
+      finishRace();
+      break;
   }
   
   debugTask();
@@ -363,6 +392,11 @@ void parseData(String& receivedData) {
 void handleCommand(String command) {
   // Utilisation d'un switch pour les commandes sans paramètres
   char cmd = command[0];
+  if (cmd != 'K') analogWrite(BUZZER_PIN, 0);
+  // if (cmd != 'X' && cmd != 'C' && cmd != 'V' && cmd != 'H' && cmd != 'N') {
+  //   encoderLeft.setMotorPwm(0);
+  //   encoderRight.setMotorPwm(0);
+  // }asd
   switch (cmd) {
     case 'F':
       commandForward();
@@ -384,6 +418,36 @@ void handleCommand(String command) {
       //goStraight(-speed);
       break;
 
+    case 'K':  // Commande "BEEP"
+      //Serial.println(F("Commande BEEP reçue - exécuter le bip"));
+      commandBeep();
+      break;
+
+    case 'X':
+      encoderLeft.setMotorPwm(100);
+      encoderRight.setMotorPwm(-200);
+      straightFirstRun = true;
+      break;
+    case 'C':
+      encoderLeft.setMotorPwm(150);
+      encoderRight.setMotorPwm(-200);
+      straightFirstRun = true;
+      break;
+    case 'V':
+      //commandForward();
+      goStraight(160);
+      break;
+    case 'H':
+      encoderLeft.setMotorPwm(200);
+      encoderRight.setMotorPwm(-150);
+      straightFirstRun = true;
+      break;
+    case 'N':
+      encoderLeft.setMotorPwm(200);
+      encoderRight.setMotorPwm(-100);
+      straightFirstRun = true;
+      break;
+
     case 'i':
       state = LINE;
       firstLine = true;
@@ -396,12 +460,18 @@ void handleCommand(String command) {
       encoderRight.setMotorPwm(0);
       break;
 
-    case 'k':
+    case 'o':
       state = CALIBRATION;
       break;
 
     case 'G':
       state = MISSION;
+      encoderLeft.setMotorPwm(0);
+      encoderRight.setMotorPwm(0);
+      break;
+
+    case 'W':
+      state = END;
       encoderLeft.setMotorPwm(0);
       encoderRight.setMotorPwm(0);
       break;
@@ -532,6 +602,18 @@ void spin(short speed, short direction) {
   encoderLeft.setMotorPwm(speed * direction);
   encoderRight.setMotorPwm(speed * direction);
   straightFirstRun = true;
+}
+
+void commandBeep() {
+  static int beepIntensity = 127;
+  analogWrite(BUZZER_PIN, beepIntensity);
+  encoderLeft.setMotorPwm(0);
+  encoderRight.setMotorPwm(0);
+  // if (beep) {
+    
+  // } else {
+  //   analogWrite(BUZZER_PIN, 0);
+  // }
 }
 
 #pragma region COMMANDES
@@ -670,9 +752,9 @@ int countCharOccurrences(const String &str, char ch) {
 
 float computePID(float position, float consigne = 0.0f) {
     // Ajuster les coefficients selon vos besoins
-    static float kp = 0.4; // Coefficient proportionnel
-    static float ki = 0.01; // Coefficient intégral
-    static float kd = 0.01; // Coefficient dérivé
+    static float kp = 0.5; // Coefficient proportionnel
+    static float ki = 0.0; // Coefficient intégral
+    static float kd = 0.0; // Coefficient dérivé
 
     static float integral = 0;
     static float derivative = 0;
@@ -779,8 +861,8 @@ void normaliserValeurs() {
 
 float getDistance() {
   static unsigned long lastTime = 0;
-  static int delay = 250;
-  float distance;
+  static int delay = 100;
+  // float distance;
   float newDistance;
 
   if (currentTime - lastTime < delay) return distance; 
@@ -789,11 +871,9 @@ float getDistance() {
 
   newDistance = ultraSensor.distanceCm();
 
-  if (newDistance > 0 && newDistance < 250) {
+  if (newDistance > 3) { //  && newDistance < 401
     distance = newDistance;
-    delay = 100;
-  } else {
-    delay = 250;
+    // delay = 100;
   }
 
   return distance;
@@ -814,27 +894,29 @@ bool noSensorsOnLine() {
 }
 
 void updateLineState(float distance) {
-  static int seuilDist = 40;
+  // static int seuilDist = 40;
+  static float seuilCareful = 30;
+  static float seuilFollow  = 40;
   static bool isCareful = false;
   static short fastSpeed = lineSpeed;
-  static short slowSpeed = 40;
+  static short slowSpeed = 50;
 
   switch(lineState) {
     case FOLLOW:
       lineSpeed = fastSpeed;
-      if (distance <= seuilDist && !isCareful) {
+      if (distance <= seuilCareful) {
         lineState = CAREFUL;
         isCareful = true;
-
+        Serial.println(distance);
         Serial.println(F("CAREFUL"));
       }
       break;
     case CAREFUL:
       lineSpeed = slowSpeed;
-      if (distance > seuilDist && isCareful) {
+      if (distance > seuilFollow) {
         lineState = FOLLOW;
         isCareful = false;
-         // speed est la variable globale de vitesse en manuelle
+        Serial.println(distance);
         Serial.println(F("FOLLOW"));
       }
       break;
@@ -844,65 +926,52 @@ void updateLineState(float distance) {
 void handleLinePresence(bool isOnLine, float adjustment) {
   static short speed = lineSpeed;
 
-  if (firstLine && !noSensorsOnLine()) {
-    firstLine = false;
-  }
-
-  // static int fullLine = 2000;
-  // if (isOnLine && getTotalSignal() > fullLine) {
-  //   if (firstLine) firstLine = false;
-  //   suivreLigne(adjustment);
-  // } else {
-  //   if (firstLine) {
-  //     goStraight(speed);
-  //   } else {
-  //     encoderLeft.setMotorPwm(speed);
-  //     encoderRight.setMotorPwm(speed);
-  //   }
+  // if (firstLine && !noSensorsOnLine() && !allSensorsOnLine()) {
+  //   firstLine = false;
   // }
 
-  if (allSensorsOnLine() && !firstLine) { // intersections
+  if (allSensorsOnLine()) { // intersections
     lineState = INTERSECTION;
     return;
   }
 
-  if (allSensorsOnLine() && firstLine) { // entrer en ligne
-    encoderLeft.setMotorPwm(speed);
-    encoderRight.setMotorPwm(speed);
-    return;
-  }
+  // if (allSensorsOnLine() && firstLine) { // entrer en ligne
+  //   encoderLeft.setMotorPwm(speed);
+  //   encoderRight.setMotorPwm(speed);
+  //   return;
+  // }
 
-  if (capteurs[0].onLine && capteurs[1].onLine && capteurs[2].onLine) { // angle droit vers la gauche
-    encoderLeft.setMotorPwm(-speed);
+  // if (capteurs[0].onLine && capteurs[1].onLine && capteurs[2].onLine) { // angle droit vers la gauche
+  //   encoderLeft.setMotorPwm(-speed);
+  //   encoderRight.setMotorPwm(-speed);
+  //   return;
+  // }
+
+  // if (capteurs[2].onLine && capteurs[3].onLine && capteurs[4].onLine) { // angle droit vers la droite
+  //   encoderLeft.setMotorPwm(speed);
+  //   encoderRight.setMotorPwm(speed);
+  //   return;
+  // }
+
+  if (noSensorsOnLine()) {
+    //Serial.println(firstLine);
+    encoderLeft.setMotorPwm(speed);
     encoderRight.setMotorPwm(-speed);
     return;
   }
 
-  if (capteurs[2].onLine && capteurs[3].onLine && capteurs[4].onLine) { // angle droit vers la droite
-    encoderLeft.setMotorPwm(speed);
-    encoderRight.setMotorPwm(speed);
-    return;
-  }
-
-  if (noSensorsOnLine() && !firstLine) { // tourne pour revenir sur ligne
-    //Serial.println(firstLine);
-    encoderLeft.setMotorPwm(speed);
-    encoderRight.setMotorPwm(speed);
-    return;
-  }
-
-  if (noSensorsOnLine() && firstLine) { // aucune ligne rencontrer
-    //Serial.println(firstLine);
-    goStraight(speed);
-    return;
-  }
+  // if (noSensorsOnLine() && firstLine) { // aucune ligne rencontrer
+  //   //Serial.println(firstLine);
+  //   goStraight(speed);
+  //   return;
+  // }
 
   suivreLigne(adjustment);
 }
 
 bool spin90(short direction = 1) {
   static double zAngleGoal = 0.0;
-  static float speed = 33;
+  static float speed = 60;
     
   static double error = 0.0;
   static double previousError = 0.0;
@@ -921,7 +990,7 @@ bool spin90(short direction = 1) {
     firstSpin = false;
 
     zAngleGoal = gyro.getAngleZ() + 90 * direction;
-    Serial.println ("Setting speed");
+    // Serial.println ("Setting speed");
       
     encoderLeft.setMotorPwm(speed * direction);
     encoderRight.setMotorPwm(speed * direction);
@@ -956,8 +1025,10 @@ bool spin90(short direction = 1) {
 void handleIntersections(float distance) {
   static unsigned long startTime;
   static bool direction;
-  static short advanceDelay = 500;
-  static short slow = 50;
+  static short advanceDelay = 350;
+  static short slow = 60;
+  static short d = 1;
+  static short dist = 40;
 
   switch (intState) {
     case ADVANCE:
@@ -972,32 +1043,106 @@ void handleIntersections(float distance) {
 
     case SPIN:
       if (currentTime - startTime < advanceDelay) return;
-      if (!spin90(-1)) return;
-      direction = (distance < 50);  // TRUE = mur
+      if (!spin90(-1 * d)) return;
+      direction = (distance < dist);  // TRUE = mur
       intState = FINAL;
       break;
 
     case FINAL:
       if (direction) {
-        if (!turn(175)) return; // tourner à droite si mur à gauche
+        if (!turn(175 * d)) return; // tourner à droite si mur à gauche
       }
-      // Sortie : remise à zéro des phases et retour au FOLLOW
-      Serial.println(F("gauche"));
+      
+      if (distance < dist) {
+        intState = PARKING;
+      } else {
+        lineState = FOLLOW;
+        intState = ADVANCE;
+        encoderLeft.setMotorPwm(0);
+        encoderRight.setMotorPwm(0);
+      }
+      break;
+    
+    case PARKING:
+      static bool spinDone = false;
+    
+      straightFirstRun = true;
+
+      if (!spinDone && !spin90(1 * d)) return;
+      spinDone = true;
+
+      if (!noSensorsOnLine()) {
+        goStraight(-slow);
+        return;
+      }
+
       lineState = FOLLOW;
       intState = ADVANCE;
+      arrived = true;
       encoderLeft.setMotorPwm(0);
       encoderRight.setMotorPwm(0);
+
       break;
   }
 }
 
+bool findLine() {
+  static short advanceDelay = 100;
+  static short speed = 100;
+  static unsigned long startTime;
+
+  normaliserValeurs();
+
+  switch(findLineState) {
+    case FIND:
+      goStraight(speed);
+      if (!noSensorsOnLine()) {
+        findLineState = CENTER;
+        startTime = currentTime;
+      }
+      break;
+    case CENTER:
+      if (currentTime - startTime < advanceDelay) return;
+      if (!turn(90)) return;
+      findLineState = DONE;
+      break;
+    case DONE:
+      findLineState = FIND;
+      straightFirstRun = true;
+      checkPoint++;
+      return true;
+      break;
+  }
+
+  // if (capteurs[0].onLine) {
+  //   // ligne à gauche
+  //   encoderLeft.setMotorPwm(50);
+  //   encoderRight.setMotorPwm(50);
+  //   return false;
+  // } if (capteurs[4].onLine) {
+  //   // ligne à droite
+  //   encoderLeft.setMotorPwm(50);
+  //   encoderRight.setMotorPwm(50);
+  //   return false;
+  // }
+
+  // bool center = capteurs[1].onLine || capteurs[2].onLine || capteurs[3].onLine;
+  // if (center && !allSensorsOnLine()) {
+  //   straightFirstRun = true;
+  //   return true;
+  // }
+
+  return false;
+}
+
 void lineTask() { /////////////////// LOOP FOR LINE ////////////////////
   static float consigne = 0.0f; // Position centrale
-  static float distance;
   // Normaliser les valeurs des capteurs
   normaliserValeurs();
 
   distance = getDistance();
+
+  //Serial.println(distance);
 
   updateLineState(distance);
 
@@ -1039,9 +1184,10 @@ void jsonTask() {
     static StaticJsonDocument<128> doc;
     lastTime = currentTime;
     doc["ts"] = currentTime;
-    doc["chrono"] = currentTime - chronoStart;
+    doc["chrono"] = chronoEnd - chronoStart;
     doc["etat"] = state;
     doc["gz"] = gyro.getAngleZ();
+    doc["cp"] = checkPoint;
 
     static JsonObject pwm = doc.createNestedObject("pwm");
     pwm["l"] = encoderLeft.getCurPwm();
@@ -1054,26 +1200,154 @@ void jsonTask() {
     }
     serializeJson(doc, output); 
     Serial.println(output); 
-  } 
+  }
 }
 #pragma endregion
 #pragma region MISSON
 void missionTask() {
-  static bool firstMission = true;
-  if (firstMisson) {
-    firstMisson = false;
-  }
-  ledTask();
+  // static bool firstMission = true;
+  // if (firstMission) {
+  //   firstMission = false;
+  // }
+  // ledTask();
   switch(missionState) {
     case START:
+      ledTask();
+      break;
+    case PACKAGE:
+    static bool lineFound = false;
+    static unsigned long noLineTime = 0;
+    static short noLineDelay = 150;
+    static short ledDelay = 1000;
+    static bool ledStart = true;
+
+      if (ledStart && currentTime - missionBeginning > ledDelay) {
+        ledStart = false;
+        led_ring.setColor(0, 0, 0);
+        led_ring.show();
+      }
+
+      if (!lineFound && findLine()) lineFound = true;
+
+      if (lineFound) {
+
+        if (!noSensorsOnLine()) noLineTime = currentTime;
+
+        if (currentTime - noLineTime < noLineDelay) {
+          lineTask();
+        } else {
+          takePackage();
+        }
+        // if (!noSensorsOnLine()) {
+        //   lineTask();
+        // } else {
+        //   // takePackage();
+        //   encoderLeft.setMotorPwm(0);
+        //   encoderRight.setMotorPwm(0);
+        // }
+      }
+      break;
+    
+    case DELIVER:
+      lineTask();
+      if (arrived) {
+        missionState = RACE;
+
+        for (int i = 0; i < sizeof(frontLeds)/sizeof(frontLeds[0]); i++) {
+          led_ring.setColor(frontLeds[i], 0, 50, 0);
+        }
+        led_ring.show();
+      }
+      break;
+
+    case RACE:
+      state = MANUAL;
       break;
   }
   
 }
 
+void takePackage() {
+  static int distToWall = 20;
+  static bool returned = false;
+  static int speed = 80;
+
+  distance = getDistance();
+
+  if (!possessPackage && distance > distToWall) {
+    goStraight(speed);
+    return;
+  } else if (!possessPackage) {
+    possessPackage = true;
+    checkPoint++;
+
+    for (int i = 0; i < sizeof(frontLeds)/sizeof(frontLeds[0]); i++) {
+      led_ring.setColor(frontLeds[i], 50, 50, 0);
+    }
+    led_ring.show();
+  }
+
+  if (!returned) {
+    normaliserValeurs();
+    if (noSensorsOnLine()) {
+      // encore rien vu -> continuer à reculer
+      goStraight(-speed);
+      return;           // IMPORTANT : sortir de la fonction ici
+    } else {
+      // au moins un capteur voit la ligne -> on est revenu dessus
+      returned = true;
+    }
+  }
+
+  // une fois returned == true, on exécute le 175° et la suite
+  if (!turn(175)) return;
+  missionState = DELIVER;
+  firstLine = true;
+  straightFirstRun = true;
+
+  // if (noSensorsOnLine()) {
+  //   goStraight(40);
+  // } else {
+    
+  // }
+}
+
+void finishRace() {
+  static short distToGo = 10;
+  static short speed = 80;
+  static bool firstTime = true;
+
+  distance = getDistance();
+
+  if (distance > distToGo) {
+    goStraight(speed);
+  } else {
+    commandStop();
+    rainbowLed();
+    if (firstTime) {
+      raceEnded = true;
+      firstTime = false;
+      checkPoint++;
+    }
+  }
+}
+
+void ledCheckpoint() {
+  static short lastCheckPoint = 0;
+
+  if (checkPoint != lastCheckPoint) {
+    lastCheckPoint = checkPoint;
+
+    for (int i = 0; i < checkPoint; i++) {
+      led_ring.setColor(backLeds[i], 50, 0, 50);
+    }
+    led_ring.show();
+  }
+}
+
 void ledTask() {
   static unsigned long lastTime = 0;
-  static short ledInt = 25;
+  static short ledInt = 50;
   switch(ledState) {
     case THREE:
         led_ring.setColor(ledInt, 0, 0);
@@ -1082,26 +1356,63 @@ void ledTask() {
         Serial.println(3);
       break;
     case TWO:
-      static int delay = 2000;
-      if (currentTime - lastTime < delay) return;
+      static int delay1 = 2000;
+      static bool secondTwo = true;
+
+      if (secondTwo && currentTime - lastTime > 1000) {
+        secondTwo = false;
+        Serial.println(2);
+      }
+
+      if (currentTime - lastTime < delay1) return;
+
+      lastTime = currentTime;
       led_ring.setColor(ledInt, ledInt, 0);
       ledState = ONE;
       lastTime = currentTime;
       Serial.println(1);
       break;
     case ONE:
-      static int delay = 1000;
-      if (currentTime - lastTime < delay) return;
+      static int delay2 = 1000;
+      if (currentTime - lastTime < delay2) return;
+      lastTime = currentTime;
       led_ring.setColor(0, ledInt, 0);
       ledState = GO;
       lastTime = currentTime;
       Serial.println(F("GO!"));
       break;
     case GO:
-        ledState = OFF;
+      chronoStart = currentTime;
+      missionBeginning = currentTime;
+      ledState = OFF;
+      missionState = PACKAGE;
+      firstLine = true;
+      straightFirstRun = true;
       break;
     case OFF:
+      
       break;
   }
+  led_ring.show();
+}
+
+void rainbowLed()
+{
+  static float j;
+  static float f;
+  static float k;
+  
+  for (uint8_t t = 0; t < AURIGARINGLEDNUM; t++ )
+  {
+    uint8_t red	= 8 * (1 + sin(t / 2.0 + j / 4.0) );
+    uint8_t green = 8 * (1 + sin(t / 1.0 + f / 9.0 + 2.1) );
+    uint8_t blue = 8 * (1 + sin(t / 3.0 + k / 14.0 + 4.2) );
+    led_ring.setColorAt( t, red, green, blue );
+  }
+  led_ring.show();
+
+  j += random(1, 6) / 6.0;
+  f += random(1, 6) / 6.0;
+  k += random(1, 6) / 6.0;
 }
 #pragma endregion
